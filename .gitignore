@@ -1,0 +1,5 @@
+*.sh
+*.conf
+*.armv7l
+*.x86_64
+ec_maps/

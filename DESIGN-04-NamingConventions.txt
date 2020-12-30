@@ -1,0 +1,48 @@
+[ EC Hostnames ]
+
+  ec-XXYYZZn
+
+[ EC Sensor Metrics and Tags ]
+
+  <metric>{<tags...>} value
+
+The following <metric> names are allowed :
+
+  sensor_accel
+  sensor_button
+  sensor_current
+  sensor_gas
+  sensor_humidity
+  sensor_light
+  sensor_moisture
+  sensor_pressure
+  sensor_pump
+  sensor_range
+  sensor_temperature
+  sensor_voltage
+
+The following <tags> are supported for sensor metrics 
+
+  location=<s>
+    examples:
+    - Balcony
+    - WestWall
+    - UtilityRoom
+  model=<s>
+    supported values:
+    - ninv30a
+    - a1301
+    - mq5
+    - hcsr04
+    - mcp3008
+    - dht22
+    - bmp180
+    - resistive
+  axis=<[x|y|z]>
+  type=<s>
+    supported values:
+    - Min
+    - Max
+    - Ave
+    - Cur
+

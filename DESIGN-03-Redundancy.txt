@@ -1,0 +1,48 @@
+[ Triple Modular Redundancy ]
+
+Building State follows the triple modular redundancy design. The core
+philosophy here is :
+
+  a) for every given input, it is delivered to 3x separate processors
+  b) all 3x outputs are then compared :
+    - Normally, all 3x outputs must match
+    - If one output does not match, it is marked as bad
+    - If all 3x outputs do not match, no action is taken and an alarm is fired
+
+By following this design, we validate the function of SDS (Software Defined
+Stuff) components. For example, when rolling out a new version of an SDS
+component, we deploy the new version as a single instance first. We can now
+compare the responses of the new version against the 2x older instances. Once
+we're comfortable with the stability and function of the new version, we can
+safely rollout to all 3x instances.
+
+[ The Majority Gate (MG) ]
+
+This requires that SDS components deliver their action requests to a Majority
+Gate (MG). The job of the MG is to decide whether to forward or drop the SDS
+action requests. When in agreement, the MG will publish one copy of the action
+requests into the "<site>/ec/commands/..." topic. Thus, the MQTT broker should
+be configured to only allow the MG to publish to this topic.
+
+When an event is publish from an EC to a particular topic (eg, button pressed),
+it is assumed that 3x SDS component instances have subscribed to the topic and
+will process the event independantly. Thus, it is likely that they will publish
+their action request (if any) to the MG at almost the same time. Thus, the MG
+can expect to receive 3x action requests within a small window and perform its
+job swiftly. However, SDS instances which poll for metrics (eg, every 60 secs),
+may submit action requests to the MG in an uncordinated manner. In this case,
+the MG may have to wait up to 60 secs before deciding on its final action. In
+many cases, such a delay may be perfectly fine. For example, turning on the
+garden light when it gets dark. Thus, all action requests must be tagged with
+a validity timer. This validity timer sets a timeout for the MG to accept
+similar action requests. In the case of the button, it may be 2 seconds. In
+the case of the garden light, it may be 60 seconds.
+
+[ Sensor Cross Checks ]
+
+Where applicable, it is the responsibility of SDS components to perform
+sensor cross checks before delivering an action request. For example, an
+SDS component, upon receiving an event on a subscribed topic should query
+Building State on neighboring sensors if possible, so as to corroborate its
+final decision.
+

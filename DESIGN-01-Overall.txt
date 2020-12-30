@@ -1,0 +1,127 @@
+This document defines what Building State expects from various components
+in order to achieve interoperability and integration.
+
+[ Data Feeds ]
+
+- Prometheus scrapes various targets and writes metrics into its local TSDB
+  as well as influxdb (as configured by "remote_write").
+
+- If data is inserted into influxDB from an external source, prometheus will
+  not query it even if the data is written into the same measurement.
+
+- Because of this behavior, we'll use prometheus to scrape data that is not
+  timing sensitive (eg, door bell press). We'll need 2x separate means of
+  handling sensor data :
+   a) polling (prometheus) - eg, temperature, humidity, etc
+   b) event (mqtt) - eg, door bell press, window open/close, IR trigger, etc
+
+- To make visualization easier (ie, on grafana), we write event data with the
+  same format (in influxdb), so that it looks like it came from prometheus.
+  For example, a door bell press would like this (in influxdb), notice how
+  the button was depressed for 87 milli-secs :
+
+  time                      __name__       instance job  location model  value
+  ----                      --------       -------- ---  -------- -----  -----
+  2020-11-01T01:54:23.505Z  sensor_contact esp32-1  mqtt MainDoor button 1
+  2020-11-01T01:54:23.592Z  sensor_contact esp32-1  mqtt MainDoor button 0
+
+- For the most part, edge controllers (EC) will present data via traditional
+  HTTP for prometheus to scrape (ie, polling). In order to facilite low latency
+  processing, events will be delivered via MQTT.
+
+[ MQTT Topic Naming And Usage ]
+
+The following is a list of all topics in use. The topic naming scheme needs
+to be specific enough such that subscribers only interested in a specific
+event, are not bombarded with events they're not interested in.
+
+  <site>/ec/sensors             # sensor events published here
+
+Thus, a button push event will be published into :
+
+  <site>/ec/sensors/<ec_hostname>/<thread_name>
+
+eg,
+
+  lawrence/ec/sensors/ec-545041a/button1
+  lawrence/ec/sensors/ec-545041a/light1
+
+To send a command to an EC,
+
+  <site>/ec/commands/<hostname>            # commands to edge controllers
+
+eg,
+
+  lawrence/ec/commands/ec-545041a "lo 15"
+
+In general, we can subscribe to all sensor events using :
+
+  % mosquitto_sub -h app-mqtt.drowningfrog.homenet.org \
+      -u username -P changeme -t 'lawrence/ec/sensors/#' -F '%I %t %p'
+
+In general, we can publish a command to a specific EC using  :
+
+  % mosquitto_pub -h app-mqtt.drowningfrog.homenet.org \
+      -u username -P changeme -t 'lawrence/ec/commands/<hostname>' \
+      -m '<command>'
+
+[ Metrics Scraping and Events ]
+
+When data arrives from sensors (ie, to the subscriber), we need to insert
+them into influxdb with the following data structure format :
+
+  "measurement" : "<name>",
+  "time" : <timestamp>,
+  "fields" : {
+    "value" : <value>
+  }
+  "tags" : {
+    <keyN> : <valueN>,
+    ...
+  }
+
+Thus a typical data point (ie, row) will look like :
+
+  "measurement" : "sensor_temperature",
+  "time" : 1604172151591000000,
+  "fields" : {
+    "value" : 18.937
+  }
+  "tags" : {
+    "__name__" : "sensor_temperature",
+    "instance" : "utility-pi:9100",
+    "job" : "rpi",
+    "location" : "UtilityRoom",
+    "model" : "ds18b20"
+  }
+
+Prometheus will typically scrape our ECs, and we expect a typical metric to
+look like this :
+
+  sensor_temperature{instance="ec-545041a:80",job="ec_scrape",location="Porch",model="ds18b20"} 30.41
+
+This kind of polled data is updated fairly infrequently (eg, every 60 secs).
+Sometimes we want to capture state changes, like a door bell press or a window
+openning or closing. We have ECs publish messages like the following :
+
+  sensor_contact{instance="ec-545041a:80",job="mqtt",location="FrontDoor",model="button"} 1
+  sensor_contact{instance="ec-545041a:80",job="mqtt",location="KitchenWindow",model="reed"} 0
+  sensor_contact{instance="ec-545041a:80",job="mqtt",location="Backyard",model="lightSwitch"} 1
+
+Also, some kinds of data are transient, like a sump pump firing. The event of
+interest would be short (eg, 8 seconds) and can be easily missed if scraping
+in 60 second intervals. This class of sensor will present Min/Ave/Max metrics
+to prometheus when scraped :
+
+  sensor_current{instance="ec-524748a",job="ec_scrape",location="SumpPump",model="30Amp",type="Max"} 762
+  sensor_current{instance="ec-524748a",job="ec_scrape",location="SumpPump",model="30Amp",type="Ave"} 18
+  sensor_current{instance="ec-524748a",job="ec_scrape",location="SumpPump",model="30Amp",type="Min"} 6
+
+From the above examples, we observe that the Edge Controller must tag each
+metric with the following tags:
+
+  a) location
+  b) model
+  c) type ([optional] for transient data only)
+
+

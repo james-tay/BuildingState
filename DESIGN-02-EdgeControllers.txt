@@ -1,0 +1,111 @@
+This document describes how an EC is implemented to meet the expectations
+of the Building State.
+
+[ Overview ]
+
+The primary role of an Edge Controller (EC) is to :
+
+  a) Provide sensor data via periodic prometheus scrapes. Examples include :
+       - the current temperature
+       - the min/ave/max values of a sensor over the past minute
+
+  b) Publish sensor events on MQTT when a sensor detects a state change.
+     Examples include :
+       - a button is pressed or released
+       - an analog value crosses a threshold
+
+  c) Respond to commands via MQTT. Examples include :
+       - set a GPIO pin high or low
+       - play a PWM tone
+
+Thus, each EC is expected to posess basic configuration necessary to do its
+job. This configuration includes :
+
+  a) WiFi SSID and password
+  b) The base MQTT topic to subscribe to (for receiving commands)
+  c) The base MQTT topic to publish command feedback to
+  d) The base MQTT topic to publish sensor data to
+  e) Configuration parameters of background threads it needs to run
+  f) List of background threads to start up on boot
+  g) Its hostname (this determines the topic commands are received on)
+
+[ Naming Convention ]
+
+Each EC's hostname is unique and its naming convention is used to reference
+its physical location within the building. The naming format is:
+
+  ec-XXYYZZn
+
+where,
+
+  XX = physical X location from 00 to 99, where 50 is the building center
+  YY = physical Y location from 00 to 99, where 50 is the main floor
+  ZZ = physical Z location from 00 to 99, where 50 is the building center
+   n = instance, starting from "a". Another EC close by will be "b", etc
+
+The unit of distance is measured in meters. For example, an EC located
+slightly south from the center of the building and in the basement may be
+named :
+
+  ec-504748a
+
+[ Metrics and Metadata ]
+
+When prometheus scrapes an EC at the URI "/metrics", we supply static metrics
+(ie, metrics on the EC itself) as well as task specific metrics. Static metrics
+include items like :
+
+  ec_rest_in_bytes 4445
+  ec_rest_commands 277
+  ec_free_heap_bytes 161768
+  ec_threads_running 3
+
+Tasks run in dedicated threads and produce specific metrics depend on the
+number of results populated by the task, along with the custom metadata
+relavant to the task itself. For example,
+
+  sensor_accel{location="window",axis="x",type="Min"} 1841
+  sensor_accel{location="window",axis="x",type="Ave"} 1886
+  sensor_accel{location="window",axis="x",type="Max"} 1915
+  ...
+
+Recall that when prometheus scrapes any of the above metrics, it will add
+some metadata to each entry. In particular, it typically adds :
+
+  instance="ec-504748a:80",job="ec"
+
+The above tags are typically derrived from prometheus.yml, eg :
+
+  - job_name: 'ec'
+    static_configs:
+    - targets:
+      - ec-504748a
+      ...
+
+When an EC is delivering an event over MQTT (eg, a sensor value crosses a
+threshold, a state change, etc), we need to deliver the metadata required
+such that the component receiving this event data, is able to insert the
+metric into persistent storage, such that it looks like it came from
+prometheus.
+
+For consistency, sensor events delivered over MQTT must have the same metrics
+format as presented in "/metrics", but must include the "instance" and "job"
+tags for identification. For example,
+
+  sensor_contact{instance="ec-545041a:80",job="ec",location="FrontDoor",model="button"} 1
+
+This means that the EC needs to know its hostname (eg, "ec-545041a"). This
+will be obtained from the "/hostname" file. Additional tags (eg, job="ec")
+are obtained from the file "/mqtt.tags".
+
+[ MQTT Commands ]
+
+While the REST interface is provided for convenience, and prometheus scrape
+integration, MQTT is expected to be the primary means of command communication
+with ECs. In particular, the Majority Gate is expected to be the entity which
+primarily dispatches commands to ECs. Since MQTT does NOT provide confirmation
+of message delivery to ECs, a mechanism to validate command delivery must be
+introduced. Thus, MQTT commands may be prepended with an optional <tag>. The
+EC will prepend this <tag> when publishing command responses to MQTT. Thus,
+the MG can validate that its commands were processed by the EC.
+

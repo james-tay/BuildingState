@@ -1,0 +1,95 @@
+[ Overview ]
+
+The primary purpose of the Majority Gate (MG) is to listen for http REST
+requests from SDS entities. Each request is typically an action to be
+executed on an EC. Thus, MG's job is to obtain a concensus on the action
+and publish the command on MQTT. In addition to determining a concensus, the
+MG performs logging and access control. This implies that SDS components
+need to authenticate with username/password when delivering their requests.
+
+[ SDS Request Format ]
+
+Each time an SDS component posts a request over HTTP, it sends the following
+HTTP headers:
+
+  Content-Type: application/json
+  X-Username: foo
+  X-Password: secret
+
+The POST payload shall include the following JSON message :
+
+  {
+    "app": "<name>"                     # eg, "doorbell"
+    "validity": <seconds>,              # eg, "10"
+    "ec": "<hostname>",                 # eg, "ec-504950a"
+    "cmd": [ "<command>" , ... ]        # eg, "hi+23"
+  }
+
+The MG adds the following metadata to each of the above actions :
+
+  Username
+  PostTime              (wallclock time of the action submission)
+  ActionChecksum        (see MD5 checksum below)
+
+This above payload should be POST'ed to the MG's /request URI endpoint. In
+turn, the MG delivers "<command>" via MQTT. Thus the configuration file used
+by MG is YAML formatted as follows :
+
+  logging:
+    file: /path/to/log
+    maxsize: <max bytes>
+  mqtt:
+    server: <hostname>
+    port: <port>
+    username: <username>
+    password: <password>
+    publish_prefix: <prefix>
+  web:
+    listen: <port number>
+  users:
+    <user1>: <password1 md5 hash>
+    ...
+    <userN>: <passwordN md5 hash>
+  apps:
+    - name: <app1>
+      majority: <num>
+    ...
+  acl:
+    - name: <acl name / description>
+      users:
+        - <userA>
+        - ...
+      ec:
+        - hostname: <ec1>
+          commands:
+            - <cmd1 regex>
+            ...
+            - <cmdN regex>
+        - hostname: <ecN>
+          ...
+    - ...
+
+[ Operational Notes ]
+
+1. By default, the MG does not allow any "<command>" from any SDS entity.
+   The "acl" section must explicitly grant permissions by specifying the
+   command(s) regex.
+
+2. When the MG gathers actions from SDS entities, it needs a means of matching
+   up actions POST'ed. This is done by comparing an MD5 checksum that's
+   calculated from the POST'ed JSON fields :
+
+      app
+      validity
+      ec
+      cmd
+
+3. Each SDS entity should use its own unique user name, even if supporting
+   the same application. For example, an SDS doorbell app has 3x SDS entities
+   configured with user names "door1", "door2" and "door3". Thus, the MG 
+   expects a single action event to be POST'ed from all 3x users. If a single
+   SDS entity fires off the same event multiple times in quick succession (ie,
+   within the same "validity" period), MG will consider it to be the same
+   single event. Essentially, MG drops duplicates, thus preventing a single
+   SDS entity from flooding messages to gain the majority.
+
