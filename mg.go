@@ -294,6 +294,16 @@ func f_addAction(user string, payload string) bool {
     return(false)
   }
 
+  if (action["timeout"] == nil) {
+    fmt.Printf ("WARNING: 'timeout' not specified by '%s'.\n", user)
+    return(false)
+  }
+  if (reflect.TypeOf(action["timeout"]).String() != "float64") {
+    fmt.Printf ("WARNING: 'timeout' by '%s' is '%s', expecting float64.\n",
+                user, reflect.TypeOf(action["timeout"]).String())
+    return(false)
+  }
+
   /* make sure that "cmd" is a string array, not array or something else */
 
   if (action["cmd"] == nil) {
@@ -479,6 +489,8 @@ func f_evalActions() {
         G_mt_pub.Lock()
         for i:=0 ; i < len(cmd) ; i++ {
           a := S_pub{Topic:pub_topic}
+          a.TimeoutNs = int64 (G_actions[idx].Payload["timeout"].(float64) *
+                                1000000000.0)
           a.Msg = cmd[i].(string)
           G_pub = append(G_pub, a)
           if (G_debug > 0) {
@@ -511,27 +523,38 @@ func f_evalActions() {
 
 func f_doPublish(client mqtt.Client) {
 
+  now := time.Now().UnixNano()
   G_mt_pub.Lock()
-  for (len(G_pub) > 0) {
+  for idx := 0 ; idx < len(G_pub) ; idx++ {
     if (G_debug > 0) {
-      fmt.Printf ("DEBUG: f_doPublish() %s->%s\n",
-                  G_pub[0].Msg, G_pub[0].Topic)
+      fmt.Printf ("DEBUG: f_doPublish() inspecting '%s'->%s Pub:%d To:%d\n",
+                  G_pub[idx].Msg, G_pub[idx].Topic,
+                  G_pub[idx].PubTime, G_pub[idx].TimeoutNs)
     }
 
-    token := client.Publish(G_pub[0].Topic, 0, false, G_pub[0].Msg)
-    token.Wait()
-    if (token.Error() != nil) {
-      fmt.Printf("WARNING: MQTT publish failed - %s\n", token.Error())
+    /* if this entry has not been published yet ... */
+
+    if (G_pub[idx].PubTime == 0) {
+      token := client.Publish(G_pub[idx].Topic, 0, false, G_pub[idx].Msg)
+      token.Wait()
+      if (token.Error() != nil) {
+        fmt.Printf("WARNING: MQTT publish to %s failed - %s\n",
+                   G_pub[idx].Topic, token.Error())
+      } else {
+        G_pub[idx].PubTime = time.Now().UnixNano()
+      }
     }
-    G_pub = G_pub[1:]   // delete element at the start of the slice
+
+    /* if this entry has been around too long ... it's a fault condition */
+
+    if (G_pub[idx].PubTime + G_pub[idx].TimeoutNs < now) {
+      fmt.Printf ("WARNING: no response from %s for '%s' after %fs.\n",
+                  G_pub[idx].Topic, G_pub[idx].Msg,
+                  float64(G_pub[idx].TimeoutNs) / 1000000000.0)
+      G_pub = append(G_pub[:idx], G_pub[idx+1:]...)
+      idx--
+    }
   }
-
-
-
-
-
-
-
   G_mt_pub.Unlock()
 }
 
@@ -639,10 +662,17 @@ func f_pubThread() {
           cutoff := G_actions[idx].PostTime + int64(validity * 1000000000.0)
           if (now > cutoff) {
             if (G_debug > 0) {
-              fmt.Printf ("DEBUG: f_pubThread() expired %s@%d state:%d {%s}\n",
+              fmt.Printf ("DEBUG: f_pubThread() expired %s@%d state:%d {%v}\n",
                           G_actions[idx].Username, G_actions[idx].PostTime,
                           G_actions[idx].State, G_actions[idx].Payload)
             }
+            if (G_actions[idx].State == STATE_PENDING) {
+              fmt.Printf ("WARNING: no majority vote for %s@%d {%v}\n",
+                          G_actions[idx].Username,
+                          G_actions[idx].PostTime,
+                          G_actions[idx].Payload)
+            }
+
             G_actions = append(G_actions[:idx], G_actions[idx+1:]...)
           }
         }
