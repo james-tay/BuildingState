@@ -8,12 +8,17 @@
 
    Description
 
-     This program implements a majority gate by listening for actions POST'ed
+     This program implements a Majority Gate by listening for actions POST'ed
      from SDS entities. This program maintains a global shared list where
-     actions are stored. The web handler adds actions to this list, while a
-     separate thread periodically scans through this list, taking the
-     necessary actions (typically publishing it on MQTT). This program's
-     main thread simply blocks forever at http.ListenAndServe().
+     actions POST'ed are stored, called "G_actions". The web handler adds
+     actions to this list.
+
+     A separate thread "f_pubThread()" scans through this list, identifying
+     successful actions into the "G_pub" list. Note that each POST'ed action
+     may contain multiple commands to an EC. The "f_doPublish()" function
+     takes commands from this list and publishes them to ECs via MQTT.
+
+     This program's main thread simply blocks forever at http.ListenAndServe().
 
    REST
 
@@ -39,9 +44,23 @@
        {
          "app": "<name>"
          "validity": <seconds>,
+         "timeout": <seconds>,
          "ec": "<hostname>",
          "cmd": [ "<cmd>", ... ]
        }
+
+   Action Tags
+
+     Once an action has achieved majority, its command(s) are published via
+     MQTT. Presumably, an Edge Controller (EC) will execute it and publish a
+     response. If no response is received, we need to identify this as a
+     fault condition. In order to identify commands that we publish, we need
+     to supply a unique tag to each command, and verify that its response
+     includes the same tag.
+
+     Thus, each command in the "G_pub" list has a state and a unique tag
+     identifying it. Entries in "G_pub" are only removed after receiving a
+     response, or timeout.
 */
 
 package main
@@ -66,8 +85,13 @@ import (
 /* action received, but has not passed the majority gate */
 const STATE_PENDING = 1
 
-/* action published to mqtt, awaiting expiration (in case more show up) */
+/*
+   action won majority vote and (probably) published to mqtt, awaiting
+   expiration (in case more show up)
+*/
 const STATE_PUBLISHED = 2
+
+/* This data structure tracks an HTTP POST from an SDS entity */
 
 type S_action struct {
   Username string                       // the SDS entity POST'ing this
@@ -77,9 +101,16 @@ type S_action struct {
   State int                             // pending, published
 }
 
+/*
+   This data structure tracks a single command published to an EC. We know
+   we've published if PubTime is > 0.
+*/
+
 type S_pub struct {
-  msg string
-  topic string
+  Msg string                            // the command
+  Topic string                          // MQTT topic EC subscribes to
+  PubTime int64                         // wall clock time of our MQTT publish
+  TimeoutNs int64                       // how long we'll wait for a response
 }
 
 var G_debug int
@@ -158,6 +189,10 @@ func f_getConfig (filename string) map[interface{}]interface{} {
   } 
   if (mqtt_cfg["publish_prefix"] == nil) {
     fmt.Printf ("WARNING: 'mqtt:publish_prefix' not configured\n")
+    return(nil)
+  }
+  if (mqtt_cfg["response_prefix"] == nil) {
+    fmt.Printf ("WARNING: 'mqtt:response_prefix' not configured\n")
     return(nil)
   }
 
@@ -443,8 +478,8 @@ func f_evalActions() {
 
         G_mt_pub.Lock()
         for i:=0 ; i < len(cmd) ; i++ {
-          a := S_pub{topic:pub_topic}
-          a.msg = cmd[i].(string)
+          a := S_pub{Topic:pub_topic}
+          a.Msg = cmd[i].(string)
           G_pub = append(G_pub, a)
           if (G_debug > 0) {
             fmt.Printf ("DEBUG: f_evalActions() appending S_pub{%s}\n", a)
@@ -469,8 +504,9 @@ func f_evalActions() {
 }
 
 /*
-   This function inspects "G_pub", if there are any messages to publish, now
-   is the time.
+   This function inspects the "G_pub" array, if there are any messages to
+   publish, it is done now. If we haven't received a response after the
+   timeout period, report a fault and remove the entry.
 */
 
 func f_doPublish(client mqtt.Client) {
@@ -479,17 +515,37 @@ func f_doPublish(client mqtt.Client) {
   for (len(G_pub) > 0) {
     if (G_debug > 0) {
       fmt.Printf ("DEBUG: f_doPublish() %s->%s\n",
-                  G_pub[0].msg, G_pub[0].topic)
+                  G_pub[0].Msg, G_pub[0].Topic)
     }
 
-    token := client.Publish(G_pub[0].topic, 0, false, G_pub[0].msg)
+    token := client.Publish(G_pub[0].Topic, 0, false, G_pub[0].Msg)
     token.Wait()
     if (token.Error() != nil) {
       fmt.Printf("WARNING: MQTT publish failed - %s\n", token.Error())
     }
     G_pub = G_pub[1:]   // delete element at the start of the slice
   }
+
+
+
+
+
+
+
   G_mt_pub.Unlock()
+}
+
+func f_subscribeCallback(client mqtt.Client, msg mqtt.Message) {
+
+  if (G_debug > 0) {
+    fmt.Printf("DEBUG: f_subscribeCallback() topic:%s payload:%s\n",
+               msg.Topic(), msg.Payload())
+  }
+
+
+
+
+
 }
 
 /*
@@ -528,6 +584,17 @@ func f_pubThread() {
   }
   fmt.Printf("NOTICE: MQTT connected to %s.\n", broker)
 
+  result = client.Subscribe(mqtt_cfg["response_prefix"].(string), 0,
+                            f_subscribeCallback)
+  result.Wait()
+  if (result.Error() != nil) {
+    fmt.Printf("FATAL! Cannot subscribe to %s - %s\n",
+               mqtt_cfg["response_prefix"].(string), result)
+    os.Exit(1)
+  }
+  fmt.Printf("NOTICE: MQTT subscribed to %s.\n",
+             mqtt_cfg["response_prefix"].(string))
+
   /* now enter our main loop ... wait for events POST'ed, or do admin tasks */
 
   for (true) {
@@ -552,6 +619,14 @@ func f_pubThread() {
             fmt.Printf("WARNING: reconnect to %s failed - %s\n",
                        broker, result.Error())
           }
+
+          result = client.Subscribe(mqtt_cfg["response_prefix"].(string), 0,
+                                    f_subscribeCallback)
+          result.Wait()
+          if (result.Error != nil) {
+            fmt.Printf("WARNING: Cannot subscribe to %s - %s\n",
+                       mqtt_cfg["response_prefix"].(string), result)
+          }
         }
 
         /* inspect G_actions, clear out expired entries */
@@ -573,6 +648,12 @@ func f_pubThread() {
         }
 
         G_mt_actions.Unlock()
+
+        /* inspect G_pub, see if anything needs to be done */
+
+        if (client.IsConnectionOpen()) {
+          f_doPublish(client)
+        }
     }
   }
 }

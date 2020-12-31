@@ -21,13 +21,26 @@ The POST payload shall include the following JSON message :
   {
     "app": "<name>"                     # eg, "doorbell"
     "validity": <seconds>,              # eg, "10"
+    "timeout": <seconds>,               # eg, "3"
     "ec": "<hostname>",                 # eg, "ec-504950a"
     "cmd": [ "<command>" , ... ]        # eg, "hi+23"
   }
 
+Where,
+
+  app      - the name of the SDS entity POST'ing this action
+  validity - how long the MG will wait to accumulate POSTs from similar apps,
+             for this particular action. The action MUST achieve the majority
+             vote before this timer expires.
+  timeout  - after achieving the majority vote, the EC must respond within
+             this duration, after each command is delivered to it.
+  ec       - the hostname of the EC, to which commands will be published to.
+  cmd      - an array of one or more commands to be sent to the EC, upon
+             obtaining the majority vote.
+
 The MG adds the following metadata to each of the above actions :
 
-  Username
+  Username              (the "X-Username" used in the HTTP POST)
   PostTime              (wallclock time of the action submission)
   ActionChecksum        (see MD5 checksum below)
 
@@ -81,6 +94,7 @@ by MG is YAML formatted as follows :
 
       app
       validity
+      timeout
       ec
       cmd
 
