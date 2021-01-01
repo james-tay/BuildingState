@@ -107,3 +107,7 @@ by MG is YAML formatted as follows :
    single event. Essentially, MG drops duplicates, thus preventing a single
    SDS entity from flooding messages to gain the majority.
 
+4. Each command published by the MG includes a "<tag>" which is an MD5 hash
+   calculated from the publish wall clock time, MQTT topic and MQTT message
+   payload. This "<tag>" should be treated as opaque.
+

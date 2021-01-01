@@ -70,6 +70,7 @@ import (
   "fmt"
   "time"
   "sync"
+  "strings"
   "reflect"
   "strconv"
   "net/http"
@@ -111,6 +112,7 @@ type S_pub struct {
   Topic string                          // MQTT topic EC subscribes to
   PubTime int64                         // wall clock time of our MQTT publish
   TimeoutNs int64                       // how long we'll wait for a response
+  Checksum string                       // MD5 checksum of this EC's command
 }
 
 var G_debug int
@@ -526,29 +528,35 @@ func f_doPublish(client mqtt.Client) {
   now := time.Now().UnixNano()
   G_mt_pub.Lock()
   for idx := 0 ; idx < len(G_pub) ; idx++ {
-    if (G_debug > 0) {
-      fmt.Printf ("DEBUG: f_doPublish() inspecting '%s'->%s Pub:%d To:%d\n",
-                  G_pub[idx].Msg, G_pub[idx].Topic,
-                  G_pub[idx].PubTime, G_pub[idx].TimeoutNs)
-    }
 
     /* if this entry has not been published yet ... */
 
     if (G_pub[idx].PubTime == 0) {
-      token := client.Publish(G_pub[idx].Topic, 0, false, G_pub[idx].Msg)
+      G_pub[idx].PubTime = time.Now().UnixNano()
+      s := fmt.Sprintf ("%d.%s.%s", G_pub[idx].PubTime,
+                        G_pub[idx].Topic, G_pub[idx].Msg)
+      G_pub[idx].Checksum = fmt.Sprintf("%x", md5.Sum([]byte(s)))
+
+      if (G_debug > 0) {
+        fmt.Printf ("DEBUG: f_doPublish() publish %s->%s cksum:%s\n",
+                    G_pub[idx].Msg, G_pub[idx].Topic,
+                    G_pub[idx].Checksum)
+      }
+
+      msg := fmt.Sprintf("%s|%s", G_pub[idx].Checksum, G_pub[idx].Msg)
+      token := client.Publish(G_pub[idx].Topic, 0, false, msg)
       token.Wait()
       if (token.Error() != nil) {
         fmt.Printf("WARNING: MQTT publish to %s failed - %s\n",
                    G_pub[idx].Topic, token.Error())
-      } else {
-        G_pub[idx].PubTime = time.Now().UnixNano()
+        G_pub[idx].PubTime = 0
       }
     }
 
     /* if this entry has been around too long ... it's a fault condition */
 
     if (G_pub[idx].PubTime + G_pub[idx].TimeoutNs < now) {
-      fmt.Printf ("WARNING: no response from %s for '%s' after %fs.\n",
+      fmt.Printf ("WARNING: no response from %s for '%s' after %.3fs.\n",
                   G_pub[idx].Topic, G_pub[idx].Msg,
                   float64(G_pub[idx].TimeoutNs) / 1000000000.0)
       G_pub = append(G_pub[:idx], G_pub[idx+1:]...)
@@ -560,15 +568,34 @@ func f_doPublish(client mqtt.Client) {
 
 func f_subscribeCallback(client mqtt.Client, msg mqtt.Message) {
 
+  /* try locate "<tag>" */
+
+  G_mt_pub.Lock()
+  payload := string(msg.Payload())
+  pos := strings.Index(payload, "|")
+
   if (G_debug > 0) {
-    fmt.Printf("DEBUG: f_subscribeCallback() topic:%s payload:%s\n",
-               msg.Topic(), msg.Payload())
+    fmt.Printf("DEBUG: f_subscribeCallback() topic:%s payload:%s pos:%d\n",
+               msg.Topic(), payload, pos)
   }
 
 
+  if (pos > 0) {
+    checksum := payload[:pos]
+    response := payload[pos+1:]
 
-
-
+    for idx:=0 ; idx < len(G_pub) ; idx++ {
+      if (G_pub[idx].Checksum == checksum) {
+        duration_ns := time.Now().UnixNano() - G_pub[idx].PubTime
+        fmt.Printf ("NOTICE: response %s->'%s' duration:%.3fs\n",
+                    msg.Topic(), response,
+                    (float64)(duration_ns) / 1000000000.0)
+        G_pub = append(G_pub[:idx], G_pub[idx+1:]...)
+        break
+      }
+    }
+  }
+  G_mt_pub.Unlock()
 }
 
 /*
@@ -652,7 +679,7 @@ func f_pubThread() {
           }
         }
 
-        /* inspect G_actions, clear out expired entries */
+        /* inspect G_actions, clear out retired (or faulted) entries */
 
         now := time.Now().UnixNano()
         G_mt_actions.Lock()
@@ -662,7 +689,7 @@ func f_pubThread() {
           cutoff := G_actions[idx].PostTime + int64(validity * 1000000000.0)
           if (now > cutoff) {
             if (G_debug > 0) {
-              fmt.Printf ("DEBUG: f_pubThread() expired %s@%d state:%d {%v}\n",
+              fmt.Printf ("DEBUG: f_pubThread() retired %s@%d state:%d {%v}\n",
                           G_actions[idx].Username, G_actions[idx].PostTime,
                           G_actions[idx].State, G_actions[idx].Payload)
             }
