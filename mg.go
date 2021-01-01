@@ -83,6 +83,13 @@ import (
   "github.com/eclipse/paho.mqtt.golang"
 )
 
+/* logging levels */
+
+const LOG_FATAL = 1             // program to exit immediately
+const LOG_WARN = 2              // unusual condition, can be retried or ignored
+const LOG_NOTICE = 3            // normal condition, but worth taking note
+const LOG_DEBUG = 4             // function call tracing
+
 /* action received, but has not passed the majority gate */
 const STATE_PENDING = 1
 
@@ -127,6 +134,23 @@ var G_pub = []S_pub{}                   // messages to publish
 
 /* ========================================================================= */
 
+/* Our general purpose logging function */
+
+func f_log (level int, msg string) {
+  t := time.Now()
+  timestamp := fmt.Sprintf("%d-%d-%d %02d:%02d:%02d.%03d",
+                           t.Year(), t.Month(), t.Day(),
+                           t.Hour(), t.Minute(), t.Second(),
+                           t.Nanosecond() / 1000000)
+  loglevel := string("UNKNOWN")
+  if (level == LOG_FATAL) { loglevel = "FATAL" }
+  if (level == LOG_WARN) { loglevel = "WARNING" }
+  if (level == LOG_NOTICE) { loglevel = "NOTICE" }
+  if (level == LOG_DEBUG) { loglevel = "DEBUG" }
+
+  fmt.Printf ("%s [%s] %s\n", timestamp, loglevel, msg)
+}
+
 /*
    This function parses "filename" and returns a data structure of a config
    that meets some essential checks. If something goes wrong, it returns nil.
@@ -138,70 +162,70 @@ func f_getConfig (filename string) map[interface{}]interface{} {
 
   content, err := ioutil.ReadFile(filename)
   if (err != nil) {
-    fmt.Printf ("WARNING: Cannot read %s - %s\n", filename, err)
+    f_log(LOG_WARN, fmt.Sprintf("Cannot read %s - %s", filename, err))
     return(nil)
   }
   cfg := make(map[interface{}]interface{})
   err = yaml.Unmarshal(content,  &cfg)
   if (err != nil) {
-    fmt.Printf ("WARNING: Cannot parse %s - %s\n", filename, err)
+    f_log(LOG_WARN, fmt.Sprintf("Cannot parse %s - %s", filename, err))
     return(nil)
   }
 
   /* validate that "cfg" has some essential items for us to function */
 
   if (G_debug > 0) {
-    fmt.Printf ("DEBUG: f_getConfig() cfg: %v\n", cfg)
+    f_log(LOG_DEBUG, fmt.Sprintf("f_getConfig() cfg: %v", cfg))
   }
 
   /* check the "web" config block */
 
   if (cfg["web"] == nil) {
-    fmt.Printf ("WARNING: 'web:' not configured.\n")
+    f_log(LOG_WARN, "'web:' not configured.")
     return(nil)
   }
   web := cfg["web"].(map[interface{}]interface{})
   if (web["listen"] == nil) {
-    fmt.Printf ("WARNING: 'web:listen' not configured.\n")
+    f_log(LOG_WARN, "'web:listen' not configured.")
     return(nil)
   }
   if (reflect.TypeOf(web["listen"]).String() != "int") {
-    fmt.Printf ("WARNING: 'web:listen' must be int.\n")
+    f_log(LOG_WARN, "'web:listen' must be int.")
     return(nil)
   }
 
   /* check the "mqtt" config block */
 
   if (cfg["mqtt"] == nil) {
-    fmt.Printf ("WARNING: 'mqtt:' not configured.\n")
+    f_log(LOG_WARN, "'mqtt:' not configured.")
     return(nil)
   }
   mqtt_cfg := cfg["mqtt"].(map[interface{}]interface{})
   if (mqtt_cfg["server"] == nil) {
-    fmt.Printf ("WARNING: 'mqtt:server' not configured.\n")
+    f_log(LOG_WARN, "'mqtt:server' not configured.")
     return(nil)
   }
   if (mqtt_cfg["port"] == nil) {
-    fmt.Printf ("WARNING: 'mqtt:port' not configured\n")
+    f_log(LOG_WARN, "'mqtt:port' not configured")
     return(nil)
   }
   if (reflect.TypeOf(mqtt_cfg["port"]).String() != "int") {
-    fmt.Printf ("WARNING: 'mqtt:port' must be int.\n")
+    f_log(LOG_WARN, "'mqtt:port' must be int.")
     return(nil)
   } 
   if (mqtt_cfg["publish_prefix"] == nil) {
-    fmt.Printf ("WARNING: 'mqtt:publish_prefix' not configured\n")
+    f_log(LOG_WARN, "'mqtt:publish_prefix' not configured")
     return(nil)
   }
   if (mqtt_cfg["response_prefix"] == nil) {
-    fmt.Printf ("WARNING: 'mqtt:response_prefix' not configured\n")
+    f_log(LOG_WARN, "'mqtt:response_prefix' not configured")
     return(nil)
   }
 
   /* check that user accounts are defined */
 
   if (cfg["users"] == nil) {
-    fmt.Printf ("WARNING: 'users:' not configured.\n")
+    f_log (LOG_WARN, "'users:' not configured.")
     return(nil)
   }
 
@@ -218,7 +242,7 @@ func f_authenticate(hdr http.Header) string {
 
   if ((hdr["X-Username"] == nil) || (hdr["X-Password"] == nil)) {
     if (G_debug > 0) {
-      fmt.Printf ("DEBUG: f_authenticate() credentials not set.\n")
+      f_log(LOG_DEBUG, "f_authenticate() credentials not set.")
     }
     return("")
   }
@@ -228,18 +252,19 @@ func f_authenticate(hdr http.Header) string {
   all_users := G_cfg["users"].(map[interface{}]interface{})
 
   if (all_users[user] == nil) {
-    fmt.Printf ("NOTICE: user '%s' does not exist.\n", user)
+    f_log(LOG_NOTICE, fmt.Sprintf("user '%s' does not exist.", user))
     return("")
   }
 
   pw_hash := md5.Sum([]byte(passwd))
   if (fmt.Sprintf("%x", pw_hash) != all_users[user].(string)) {
-    fmt.Printf ("NOTICE: incorrect password for '%s'.\n", user)
+    f_log(LOG_NOTICE, fmt.Sprintf("incorrect password for '%s'.", user))
     return("")
   }
 
   if (G_debug > 0) {
-    fmt.Printf ("NOTICE: f_authenticate() validated user '%s'.\n", user)
+    f_log(LOG_NOTICE, fmt.Sprintf("f_authenticate() validated user '%s'",
+                                  user))
   }
   return(user)
 }
@@ -256,76 +281,81 @@ func f_addAction(user string, payload string) bool {
   var action map[string]interface{}
   json.Unmarshal ([]byte(payload), &action)
   if (len(action) < 1) {
-    fmt.Printf ("WARNING: Could not parse JSON: %s\n", payload)
+    f_log(LOG_WARN, fmt.Sprintf("Could not parse JSON: %s", payload))
     return(false)
   }
 
   if (G_debug > 0) {
-    fmt.Printf ("DEBUG: f_addAction() parsed elements: %d\n", len(action))
+    f_log(LOG_DEBUG, fmt.Sprintf("f_addAction() parsed elements: %d",
+                                 len(action)))
   }
 
   /* syntax and sanity checks */
 
   if (action["app"] == nil) {
-    fmt.Printf ("WARNING: 'app' not specified by '%s'.\n", user)
+    f_log(LOG_WARN, fmt.Sprintf("'app' not specified by '%s'.", user))
     return(false)
   }
   if (reflect.TypeOf(action["app"]).String() != "string") {
-    fmt.Printf ("WARNING: 'app' by '%s' is '%s', expecting string.\n",
-                user, reflect.TypeOf(action["app"]).String())
+    f_log(LOG_WARN, fmt.Sprintf("'app' by '%s' is '%s', expecting string.",
+                                user, reflect.TypeOf(action["app"]).String()))
     return(false)
   }
 
   if (action["validity"] == nil) {
-    fmt.Printf ("WARNING: 'validity' not specified by '%s'.\n", user)
+    f_log(LOG_WARN, fmt.Sprintf("'validity' not specified by '%s'.", user))
     return(false)
   }
   if (reflect.TypeOf(action["validity"]).String() != "float64") {
-    fmt.Printf ("WARNING: 'validity' by '%s' is '%s', expecting float64.\n",
-                user, reflect.TypeOf(action["validity"]).String())
+    f_log(LOG_WARN,
+          fmt.Sprintf("'validity' by '%s' is '%s', expecting float64.",
+                      user, reflect.TypeOf(action["validity"]).String()))
     return(false)
   }
 
   if (action["ec"] == nil) {
-    fmt.Printf ("WARNING: 'ec' not specified by '%s'.\n", user)
+    f_log(LOG_WARN, fmt.Sprintf("'ec' not specified by '%s'.", user))
     return(false)
   }
   if (reflect.TypeOf(action["ec"]).String() != "string") {
-    fmt.Printf ("WARNING: 'ec' by '%s' is '%s', expecting string.\n",
-                user, reflect.TypeOf(action["ec"]).String())
+    f_log(LOG_WARN, fmt.Sprintf("'ec' by '%s' is '%s', expecting string.",
+                                user, reflect.TypeOf(action["ec"]).String()))
     return(false)
   }
 
   if (action["timeout"] == nil) {
-    fmt.Printf ("WARNING: 'timeout' not specified by '%s'.\n", user)
+    f_log(LOG_WARN, fmt.Sprintf("'timeout' not specified by '%s'.", user))
     return(false)
   }
   if (reflect.TypeOf(action["timeout"]).String() != "float64") {
-    fmt.Printf ("WARNING: 'timeout' by '%s' is '%s', expecting float64.\n",
-                user, reflect.TypeOf(action["timeout"]).String())
+    f_log(LOG_WARN,
+         fmt.Sprintf("'timeout' by '%s' is '%s', expecting float64.",
+                     user, reflect.TypeOf(action["timeout"]).String()))
     return(false)
   }
 
   /* make sure that "cmd" is a string array, not array or something else */
 
   if (action["cmd"] == nil) {
-    fmt.Printf ("WARNING: 'cmd' array not specified by '%s'.\n", user)
+    f_log(LOG_WARN, fmt.Sprintf("'cmd' array not specified by '%s'.", user))
     return(false)
   }
   if (reflect.TypeOf(action["cmd"]).String() != "[]interface {}") {
-    fmt.Printf ("WARNING: 'cmd' by '%s' is '%s', expecting []interface {}.\n",
-                user, reflect.TypeOf(action["cmd"]).String())
+    f_log(LOG_WARN,
+          fmt.Sprintf("'cmd' by '%s' is '%s', expecting []interface {}.",
+                      user, reflect.TypeOf(action["cmd"]).String()))
     return(false)
   }
   cmd := action["cmd"].([]interface{})
   if (len(cmd) < 1) {
-    fmt.Printf ("WARNING: 'cmd' by '%s' is empty.\n", user)
+    f_log(LOG_WARN, fmt.Sprintf("'cmd' by '%s' is empty.", user))
     return(false)
   }
   for i:=0 ; i < len(cmd) ; i++ {
     if (reflect.TypeOf(cmd[i]).String() != "string") {
-      fmt.Printf ("WARNING: 'cmd[%d]' by '%s' is '%s', expecting 'string'.\n",
-                  i, user, reflect.TypeOf(cmd[i]).String())
+      f_log(LOG_WARN,
+            fmt.Sprintf("'cmd[%d]' by '%s' is '%s', expecting 'string'.",
+                        i, user, reflect.TypeOf(cmd[i]).String()))
       return(false)
     }
   }
@@ -340,7 +370,7 @@ func f_addAction(user string, payload string) bool {
                           action["ec"], action["cmd"])
   raw_hash := fmt.Sprintf("%x", md5.Sum([]byte(raw_data)))
   if (G_debug > 0) {
-    fmt.Printf ("DEBUG: f_addAction() action checksum %s\n", raw_hash)
+    f_log(LOG_DEBUG, fmt.Sprintf("f_addAction() action checksum %s", raw_hash))
   }
 
   a := S_action{Username:user}
@@ -360,7 +390,7 @@ func f_addAction(user string, payload string) bool {
     }
   }
   if (repeat) {
-    fmt.Printf ("WARNING: '%s' sent repeat action, ignoring.\n", user)
+    f_log(LOG_WARN, fmt.Sprintf("'%s' sent repeat action, ignoring.", user))
   } else {
     G_actions = append(G_actions, a)
   }
@@ -379,8 +409,9 @@ func f_handleWeb(w http.ResponseWriter, r *http.Request) {
   var body string
   hdr := r.Header
   if (G_debug > 0) {
-    fmt.Printf ("DEBUG: f_handleWeb() method(%s) url(%s) query(%s) hdr{%s}\n",
-                r.Method, r.URL.Path, r.URL.RawQuery, hdr)
+    f_log(LOG_DEBUG,
+          fmt.Sprintf("f_handleWeb() method(%s) url(%s) query(%s) hdr{%s}",
+                      r.Method, r.URL.Path, r.URL.RawQuery, hdr))
   }
   var payload string
   if (r.Body != nil) {
@@ -388,7 +419,7 @@ func f_handleWeb(w http.ResponseWriter, r *http.Request) {
     payload = string(buf)
   }
   if (G_debug > 0) && (len(body) > 0) {
-    fmt.Printf ("DEBUG: f_handleWeb() body:%s\n", body)
+    f_log(LOG_DEBUG, fmt.Sprintf("f_handleWeb() body:%s", body))
   }
 
   switch (r.Method) {
@@ -428,9 +459,10 @@ func f_evalActions() {
   for idx:=0 ; idx < len(G_actions) ; idx++ {
 
     if (G_debug > 0) {
-      fmt.Printf ("DEBUG: f_evelActions() examining - %s@%d state:%d\n",
-                  G_actions[idx].Username, G_actions[idx].PostTime,
-                  G_actions[idx].State)
+      f_log(LOG_DEBUG,
+            fmt.Sprintf("f_evalActions() examining - %s@%d state:%d",
+                        G_actions[idx].Username, G_actions[idx].PostTime,
+                        G_actions[idx].State))
     }
 
     if (G_actions[idx].State == STATE_PENDING) {
@@ -447,9 +479,12 @@ func f_evalActions() {
           if ((G_actions[i].State == STATE_PENDING) &&
               (G_actions[i].ActionChecksum == G_actions[idx].ActionChecksum)) {
             if (G_debug > 0) {
-              fmt.Printf ("DEBUG: f_evalActions() %s@%d matches %s@%d\n",
-                          G_actions[idx].Username, G_actions[idx].PostTime,
-                          G_actions[i].Username, G_actions[i].PostTime)
+              f_log(LOG_DEBUG,
+                    fmt.Sprintf ("DEBUG: f_evalActions() %s@%d matches %s@%d",
+                                 G_actions[idx].Username,
+                                 G_actions[idx].PostTime,
+                                 G_actions[i].Username,
+                                 G_actions[i].PostTime))
             }
             match_e = append(match_e, i)
           }
@@ -459,8 +494,9 @@ func f_evalActions() {
           if ((G_actions[i].State == STATE_PUBLISHED) &&
               (G_actions[i].ActionChecksum == G_actions[idx].ActionChecksum)) {
             if (G_debug > 0) {
-              fmt.Printf ("DEBUG: f_evalActions() %s@%d already published.\n",
-                          G_actions[i].Username, G_actions[i].PostTime)
+              f_log(LOG_DEBUG,
+                    fmt.Sprintf(": f_evalActions() %s@%d already published",
+                                G_actions[i].Username, G_actions[i].PostTime))
             }
             G_actions[idx].State = STATE_PUBLISHED
           }
@@ -468,15 +504,17 @@ func f_evalActions() {
       }
 
       if (G_debug > 0) {
-        fmt.Printf ("DEBUG: f_evalActions() matches:%d\n", len(match_e))
+        f_log(LOG_DEBUG, fmt.Sprintf("f_evalActions() matches:%d",
+                                     len(match_e)))
       }
 
       if (len(match_e) >= 2) {
 
         /* we have a majority ! tag matching actions with STATE_PUBLISHED */
 
-        fmt.Printf ("NOTICE: majority action %s <%d>\n",
-                    G_actions[idx].ActionChecksum, len(match_e))
+        f_log(LOG_NOTICE, fmt.Sprintf("majority action %s <%d>",
+                                      G_actions[idx].ActionChecksum,
+                                      len(match_e)))
         for i:=0 ; i < len(match_e) ; i++ {
           G_actions[i].State = STATE_PUBLISHED
         }
@@ -496,7 +534,8 @@ func f_evalActions() {
           a.Msg = cmd[i].(string)
           G_pub = append(G_pub, a)
           if (G_debug > 0) {
-            fmt.Printf ("DEBUG: f_evalActions() appending S_pub{%s}\n", a)
+            f_log(LOG_DEBUG, fmt.Sprintf("f_evalActions() appending S_pub:%v",
+                                         a))
           }
         }
         G_mt_pub.Unlock()
@@ -506,11 +545,12 @@ func f_evalActions() {
 
   if (G_debug > 0) {
     for i:= 0 ; i < len(G_actions) ; i++ {
-      fmt.Printf ("DEBUG: f_evalActions() report - %s@%d %s state:%d\n",
-                  G_actions[i].Username,
-                  G_actions[i].PostTime,
-                  G_actions[i].ActionChecksum,
-                  G_actions[i].State)
+      f_log(LOG_DEBUG,
+            fmt.Sprintf("f_evalActions() report - %s@%d %s state:%d",
+                        G_actions[i].Username,
+                        G_actions[i].PostTime,
+                        G_actions[i].ActionChecksum,
+                        G_actions[i].State))
     }
   }
 
@@ -538,17 +578,17 @@ func f_doPublish(client mqtt.Client) {
       G_pub[idx].Checksum = fmt.Sprintf("%x", md5.Sum([]byte(s)))
 
       if (G_debug > 0) {
-        fmt.Printf ("DEBUG: f_doPublish() publish %s->%s cksum:%s\n",
-                    G_pub[idx].Msg, G_pub[idx].Topic,
-                    G_pub[idx].Checksum)
+        f_log(LOG_DEBUG, fmt.Sprintf("f_doPublish() publish '%s'->%s cksum:%s",
+                                     G_pub[idx].Msg, G_pub[idx].Topic,
+                                     G_pub[idx].Checksum))
       }
 
       msg := fmt.Sprintf("%s|%s", G_pub[idx].Checksum, G_pub[idx].Msg)
       token := client.Publish(G_pub[idx].Topic, 0, false, msg)
       token.Wait()
       if (token.Error() != nil) {
-        fmt.Printf("WARNING: MQTT publish to %s failed - %s\n",
-                   G_pub[idx].Topic, token.Error())
+        f_log(LOG_WARN, fmt.Sprintf("MQTT publish to %s failed - %s",
+                                    G_pub[idx].Topic, token.Error()))
         G_pub[idx].PubTime = 0
       }
     }
@@ -556,9 +596,9 @@ func f_doPublish(client mqtt.Client) {
     /* if this entry has been around too long ... it's a fault condition */
 
     if (G_pub[idx].PubTime + G_pub[idx].TimeoutNs < now) {
-      fmt.Printf ("WARNING: no response from %s for '%s' after %.3fs.\n",
-                  G_pub[idx].Topic, G_pub[idx].Msg,
-                  float64(G_pub[idx].TimeoutNs) / 1000000000.0)
+      f_log(LOG_WARN, fmt.Sprintf("no response from %s for '%s' after %.3fs.",
+                                  G_pub[idx].Topic, G_pub[idx].Msg,
+                                  float64(G_pub[idx].TimeoutNs) / 1000000000.0))
       G_pub = append(G_pub[:idx], G_pub[idx+1:]...)
       idx--
     }
@@ -575,10 +615,10 @@ func f_subscribeCallback(client mqtt.Client, msg mqtt.Message) {
   pos := strings.Index(payload, "|")
 
   if (G_debug > 0) {
-    fmt.Printf("DEBUG: f_subscribeCallback() topic:%s payload:%s pos:%d\n",
-               msg.Topic(), payload, pos)
+    f_log(LOG_DEBUG,
+          fmt.Sprintf("f_subscribeCallback() topic:%s payload:%s pos:%d",
+                      msg.Topic(), payload, pos))
   }
-
 
   if (pos > 0) {
     checksum := payload[:pos]
@@ -587,9 +627,9 @@ func f_subscribeCallback(client mqtt.Client, msg mqtt.Message) {
     for idx:=0 ; idx < len(G_pub) ; idx++ {
       if (G_pub[idx].Checksum == checksum) {
         duration_ns := time.Now().UnixNano() - G_pub[idx].PubTime
-        fmt.Printf ("NOTICE: response %s->'%s' duration:%.3fs\n",
-                    msg.Topic(), response,
-                    (float64)(duration_ns) / 1000000000.0)
+        f_log(LOG_NOTICE, fmt.Sprintf("response %s->'%s' duration:%.3fs",
+                                      msg.Topic(), response,
+                                      (float64)(duration_ns) / 1000000000.0))
         G_pub = append(G_pub[:idx], G_pub[idx+1:]...)
         break
       }
@@ -629,21 +669,22 @@ func f_pubThread() {
   result := client.Connect()
   result.Wait()
   if (result.Error() != nil) {
-    fmt.Printf("FATAL! Cannot connect to %s - %s\n", broker, result.Error())
+    f_log(LOG_FATAL, fmt.Sprintf("Cannot connect to %s - %s",
+                                 broker, result.Error()))
     os.Exit(1)
   }
-  fmt.Printf("NOTICE: MQTT connected to %s.\n", broker)
+  f_log(LOG_NOTICE, fmt.Sprintf("MQTT connected to %s.", broker))
 
   result = client.Subscribe(mqtt_cfg["response_prefix"].(string), 0,
                             f_subscribeCallback)
   result.Wait()
   if (result.Error() != nil) {
-    fmt.Printf("FATAL! Cannot subscribe to %s - %s\n",
-               mqtt_cfg["response_prefix"].(string), result)
+    f_log(LOG_FATAL, fmt.Sprintf("Cannot subscribe to %s - %s",
+                                 mqtt_cfg["response_prefix"].(string), result))
     os.Exit(1)
   }
-  fmt.Printf("NOTICE: MQTT subscribed to %s.\n",
-             mqtt_cfg["response_prefix"].(string))
+  f_log(LOG_NOTICE, fmt.Sprintf("MQTT subscribed to %s.",
+                                mqtt_cfg["response_prefix"].(string)))
 
   /* now enter our main loop ... wait for events POST'ed, or do admin tasks */
 
@@ -651,7 +692,7 @@ func f_pubThread() {
     select {
       case _ = <- G_event:
         if (G_debug > 0) {
-          fmt.Printf ("DEBUG: f_pubThread() got an event\n")
+          f_log(LOG_DEBUG, fmt.Sprintf("f_pubThread() got an event"))
         }
         f_evalActions()
         f_doPublish(client)
@@ -664,18 +705,19 @@ func f_pubThread() {
           result := client.Connect()
           result.Wait()
           if (result.Error() == nil) {
-            fmt.Printf("NOTICE: reconnected to %s.\n", broker)
+            f_log(LOG_NOTICE, fmt.Sprintf("reconnected to %s.", broker))
           } else {
-            fmt.Printf("WARNING: reconnect to %s failed - %s\n",
-                       broker, result.Error())
+            f_log(LOG_WARN, fmt.Sprintf("reconnect to %s failed - %s",
+                                        broker, result.Error()))
           }
 
           result = client.Subscribe(mqtt_cfg["response_prefix"].(string), 0,
                                     f_subscribeCallback)
           result.Wait()
           if (result.Error != nil) {
-            fmt.Printf("WARNING: Cannot subscribe to %s - %s\n",
-                       mqtt_cfg["response_prefix"].(string), result)
+            f_log(LOG_WARN, fmt.Sprintf("Cannot subscribe to %s - %s",
+                                        mqtt_cfg["response_prefix"].(string),
+                                        result))
           }
         }
 
@@ -689,15 +731,18 @@ func f_pubThread() {
           cutoff := G_actions[idx].PostTime + int64(validity * 1000000000.0)
           if (now > cutoff) {
             if (G_debug > 0) {
-              fmt.Printf ("DEBUG: f_pubThread() retired %s@%d state:%d {%v}\n",
-                          G_actions[idx].Username, G_actions[idx].PostTime,
-                          G_actions[idx].State, G_actions[idx].Payload)
+              f_log(LOG_DEBUG,
+                    fmt.Sprintf("f_pubThread() retired %s@%d state:%d {%v}",
+                                G_actions[idx].Username,
+                                G_actions[idx].PostTime,
+                                G_actions[idx].State,
+                                G_actions[idx].Payload))
             }
             if (G_actions[idx].State == STATE_PENDING) {
-              fmt.Printf ("WARNING: no majority vote for %s@%d {%v}\n",
-                          G_actions[idx].Username,
-                          G_actions[idx].PostTime,
-                          G_actions[idx].Payload)
+              f_log(LOG_WARN, fmt.Sprintf("no majority vote for %s@%d {%v}",
+                                          G_actions[idx].Username,
+                                          G_actions[idx].PostTime,
+                                          G_actions[idx].Payload))
             }
 
             G_actions = append(G_actions[:idx], G_actions[idx+1:]...)
@@ -730,7 +775,7 @@ func main () {
 
   G_cfg = f_getConfig (os.Args[1])
   if (G_cfg == nil) {
-    fmt.Printf ("FATAL! No working configuration.\n")
+    f_log(LOG_FATAL, "No working configuration.")
     os.Exit(1)
   }
 
@@ -744,10 +789,10 @@ func main () {
   listen_port := ":" + strconv.Itoa (web["listen"].(int))
   http.HandleFunc ("/v1", f_handleWeb)
 
-  fmt.Printf ("NOTICE: Starting webserver on %d.\n", web["listen"])
+  f_log(LOG_NOTICE, fmt.Sprintf ("Starting webserver on %d.", web["listen"]))
   err := http.ListenAndServe (listen_port, nil)
   if (err != nil) {
-    fmt.Printf ("FATAL! Cannot start webserver - %s\n", err)
+    f_log(LOG_FATAL, fmt.Sprintf("Cannot start webserver - %s", err))
     os.Exit (1)
   }
 }
