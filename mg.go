@@ -61,6 +61,28 @@
      Thus, each command in the "G_pub" list has a state and a unique tag
      identifying it. Entries in "G_pub" are only removed after receiving a
      response, or timeout.
+
+   Configuration
+
+     The MG is supplied a single YAML config file. The following elements
+     are implemented.
+
+     mqtt:
+       server: <string>
+       port: <num>
+       username: <string>
+       password: <string>
+       publish_prefix: <string>
+       response_prefix: <string>
+     users:
+       <string>: <string>               eg, joe: <md5 hash>
+       ...
+     web:
+       listen: <num>
+     apps:
+       - name: <string>
+         majority: <num>
+       - ...
 */
 
 package main
@@ -226,6 +248,18 @@ func f_getConfig (filename string) map[interface{}]interface{} {
 
   if (cfg["users"] == nil) {
     f_log (LOG_WARN, "'users:' not configured.")
+    return(nil)
+  }
+
+  /* check that apps are defined */
+
+  if (cfg["apps"] == nil) {
+    f_log(LOG_WARN, "'apps:' not configured.")
+    return(nil)
+  }
+  if (reflect.TypeOf(cfg["apps"]).String() != "[]interface {}") {
+    f_log(LOG_WARN, fmt.Sprintf("'apps:' must be []interface {}, not '%s'",
+                                reflect.TypeOf(cfg["apps"]).String()))
     return(nil)
   }
 
@@ -447,6 +481,34 @@ func f_handleWeb(w http.ResponseWriter, r *http.Request) {
 }
 
 /*
+   This function scans the G_cfg structure to location "app" and returns the
+   number required to be considered a majority vote. If "app" cannot be
+   found, we return -1.
+*/
+
+func f_getAppMajority(app string) int {
+
+  /* iterate through "apps" */
+
+  apps := G_cfg["apps"].([]interface{})
+  for idx:=0 ; idx < len(apps) ; idx++ {
+
+    a := apps[idx].(map[interface{}]interface {})
+    if ((a["name"] != nil) && (a["majority"] != nil)) {
+      if (app == a["name"].(string)) {
+        if (G_debug > 0) {
+          f_log(LOG_DEBUG, fmt.Sprintf("f_getAppMajority() app:%s majority:%d",
+                                       app, a["majority"].(int)))
+        }
+        return (a["majority"].(int))
+      }
+    }
+  }
+  f_log(LOG_WARN, fmt.Sprintf("app '%s' majority is unspecified", app))
+  return(-1)
+}
+
+/*
    This function's job is to inspect the elements in the G_actions list,
    identify similar actions that form a majority and publish their commands
    via MQTT.
@@ -460,9 +522,9 @@ func f_evalActions() {
 
     if (G_debug > 0) {
       f_log(LOG_DEBUG,
-            fmt.Sprintf("f_evalActions() examining - %s@%d state:%d",
+            fmt.Sprintf("f_evalActions() examining - %s@%d state:%d app:%s",
                         G_actions[idx].Username, G_actions[idx].PostTime,
-                        G_actions[idx].State))
+                        G_actions[idx].State, G_actions[idx].Payload["app"]))
     }
 
     if (G_actions[idx].State == STATE_PENDING) {
@@ -508,7 +570,8 @@ func f_evalActions() {
                                      len(match_e)))
       }
 
-      if (len(match_e) >= 2) {
+      majority := f_getAppMajority(G_actions[idx].Payload["app"].(string))
+      if ((majority > 0) && (len(match_e) >= majority)) {
 
         /* we have a majority ! tag matching actions with STATE_PUBLISHED */
 
