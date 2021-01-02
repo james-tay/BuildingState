@@ -146,6 +146,9 @@ type S_pub struct {
 
 var G_debug int
 var G_cfg map[interface{}]interface{}
+var G_logFile *os.File                  // if defined, write logs to this file
+var G_logSize int64                     // current size of our log file
+var G_logMax int64                      // threshold to rotate our logfile
 var G_event = make(chan int, 1)         // a channel to indicate event arrived
 
 var G_mt_actions sync.Mutex             // Lock() before accessing "G_actions"
@@ -170,7 +173,43 @@ func f_log (level int, msg string) {
   if (level == LOG_NOTICE) { loglevel = "NOTICE" }
   if (level == LOG_DEBUG) { loglevel = "DEBUG" }
 
-  fmt.Printf ("%s [%s] %s\n", timestamp, loglevel, msg)
+  s := fmt.Sprintf ("%s [%s] %s\n", timestamp, loglevel, msg)
+  if (G_logFile == nil) {
+    fmt.Print (s)
+  } else {
+    amt, err := G_logFile.WriteString(s)
+    if (err != nil) {
+      fmt.Printf("WARNING: Cannot write log - %s\n", err)
+    } else {
+      G_logSize = G_logSize + int64(amt)
+      if (G_logSize > G_logMax) {
+
+        /* log file is too big, time to rotate */
+
+        logging := G_cfg["logging"].(map[interface{}]interface{})
+        G_logFile.Close()
+        old := logging["file"].(string) + ".old"
+        err := os.Rename(logging["file"].(string), old)
+        if (err != nil) {
+          f_log(LOG_FATAL, fmt.Sprintf("Cannot rename %s to %s - %s",
+                                       logging["file"].(string), old, err))
+          os.Exit(1)
+        }
+
+        /* open a new file for logging, die if we can't */
+
+        f, err := os.OpenFile (logging["file"].(string),
+                               os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+        if (err != nil) {
+          f_log(LOG_FATAL, fmt.Sprintf("Cannot append to %s - %s",
+                                       logging["file"].(string), err))
+          os.Exit(1)
+        }
+        G_logFile = f
+        G_logSize = 0
+      }
+    }
+  }
 }
 
 /*
@@ -840,6 +879,43 @@ func main () {
   if (G_cfg == nil) {
     f_log(LOG_FATAL, "No working configuration.")
     os.Exit(1)
+  }
+
+  /* if logging is configured, get ready log file now */
+  fmt.Printf("[%s]\n", reflect.TypeOf(G_cfg["logging"]).String())
+  if ((G_cfg["logging"] != nil) &&
+      (reflect.TypeOf(G_cfg["logging"]).String() ==
+        "map[interface {}]interface {}")) {
+
+    logging := G_cfg["logging"].(map[interface{}]interface{})
+    if (logging["file"] == nil) {
+      f_log(LOG_FATAL, "No 'file:' defined in 'logging:'")
+      os.Exit(1)
+    }
+    if (logging["maxsize"] == nil) {
+      f_log(LOG_FATAL, "No 'maxsize:' defined in 'logging:'")
+      os.Exit(1)
+    }
+    f, err := os.OpenFile (logging["file"].(string),
+                           os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+    if (err != nil) {
+      f_log(LOG_FATAL, fmt.Sprintf("Cannot append to %s - %s",
+                                   logging["file"].(string), err))
+      os.Exit(1)
+    }
+    if (G_debug > 0) {
+      f_log(LOG_DEBUG, fmt.Sprintf("main() logging to '%s'",
+                                   logging["file"].(string)))
+    }
+    sbuf, err := f.Stat()
+    if (err != nil) {
+      f_log(LOG_FATAL, fmt.Sprintf("Cannot stat() %s - %s",
+                                   logging["file"].(string), err))
+      os.Exit(1)
+    }
+    G_logFile = f
+    G_logSize = sbuf.Size()
+    G_logMax = int64(logging["maxsize"].(int))
   }
 
   /* run the background thread that performs publish logic */

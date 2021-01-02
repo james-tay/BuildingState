@@ -1,4 +1,6 @@
 *.sh
+*.log
+*.old
 *.conf
 *.armv7l
 *.x86_64
