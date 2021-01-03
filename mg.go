@@ -82,6 +82,12 @@
      apps:
        - name: <string>
          majority: <num>
+         ec:
+           - hostname: <string>
+             commands:
+               - <regex>
+               - ...
+           - ...
        - ...
 */
 
@@ -92,6 +98,7 @@ import (
   "fmt"
   "time"
   "sync"
+  "regexp"
   "strings"
   "reflect"
   "strconv"
@@ -302,6 +309,89 @@ func f_getConfig (filename string) map[interface{}]interface{} {
     return(nil)
   }
 
+  /* check that each app has its required fields */
+
+  apps := cfg["apps"].([]interface{})
+  for a_idx := 0 ; a_idx < len(apps) ; a_idx++ {
+    cur_app := apps[a_idx].(map[interface{}]interface{})
+
+    if (cur_app["name"] == nil) {
+      f_log(LOG_WARN, fmt.Sprintf("'apps[%d]:name' not configured", a_idx))
+      return(nil)
+    }
+    if (reflect.TypeOf(cur_app["name"]).String() != "string") {
+      f_log(LOG_WARN, fmt.Sprintf("'apps[%d]:name' must be string", a_idx))
+      return(nil)
+    }
+
+    if (cur_app["majority"] == nil) {
+      f_log(LOG_WARN,
+            fmt.Sprintf("'apps[%d]:majority' not configured", a_idx))
+      return(nil)
+    }
+    if (reflect.TypeOf(cur_app["majority"]).String() != "int") {
+      f_log(LOG_WARN, fmt.Sprintf("'apps[%d]:majority' must be int", a_idx))
+      return(nil)
+    }
+
+    if (cur_app["ec"] == nil) {
+      f_log(LOG_WARN, fmt.Sprintf("'apps[%d]:ec' not configured", a_idx))
+      return(nil)
+    }
+    if (reflect.TypeOf(cur_app["ec"]).String() != "[]interface {}") {
+      f_log(LOG_WARN,
+            fmt.Sprintf("'apps[%d]:majority ' must be []interface {}", a_idx))
+      return(nil)
+    }
+
+    ecs := cur_app["ec"].([]interface{})
+    for e_idx := 0 ; e_idx < len(ecs) ; e_idx++ {
+
+      /* check that this ec has its required fields */
+
+      cur_ec := ecs[e_idx].(map[interface{}]interface{})
+      if (cur_ec["hostname"] == nil) {
+        f_log(LOG_WARN,
+              fmt.Sprintf("'apps[%d]:ec[%d]:hostname' not configured",
+                          a_idx, e_idx))
+        return(nil)
+      }
+      if (reflect.TypeOf(cur_ec["hostname"]).String() != "string") {
+        f_log(LOG_WARN,
+              fmt.Sprintf("'apps[%d]:ec[%d]:hostname' must be string",
+                          a_idx, e_idx))
+        return(nil)
+      }
+
+      if (cur_ec["commands"] == nil) {
+        f_log(LOG_WARN,
+              fmt.Sprintf("'apps[%d]:ec[%d]:commands' not configured",
+                          a_idx, e_idx))
+        return(nil)
+      }
+      if (reflect.TypeOf(cur_ec["commands"]).String() != "[]interface {}") {
+        f_log(LOG_WARN,
+              fmt.Sprintf("'apps[%d]:ec[%d]:commands' must be []interface {}",
+                          a_idx, e_idx))
+        return(nil)
+      }
+
+      cmds := cur_ec["commands"].([]interface{})
+      for c_idx := 0 ; c_idx < len(cmds) ; c_idx++ {
+
+        /* check that each command (regex) compiles successfully */
+
+        _, err := regexp.Compile(cmds[c_idx].(string))
+        if (err != nil) {
+          f_log(LOG_WARN,
+                fmt.Sprintf("apps[%d]:ec[%d]:commands[%d] bad regex - %s",
+                            a_idx, e_idx, c_idx, err))
+          return(nil)
+        }
+      }
+    }
+  }
+
   return(cfg)
 }
 
@@ -343,10 +433,57 @@ func f_authenticate(hdr http.Header) string {
 }
 
 /*
-   This function is supplied the HTTP payload from a client. We expect this
-   to be JSON, so we'll parse it and sanity check it (note that integers are
-   reported as "float64"). If it's good, we'll add this to the global action
-   list and return true, otherwise false.
+   This function is called from f_addAction(), its job is to verified if
+   "cmd" may be execute by "app", on "ec". It returns true if so, otherwise
+   false.
+*/
+
+func f_cmdAllowed(app string, ec string, cmd string) bool {
+
+  /* iterate through all "apps" in our configuration */
+
+  apps := G_cfg["apps"].([]interface{})
+  for a_idx := 0 ; a_idx < len(apps) ; a_idx++ {
+    cur_app := apps[a_idx].(map[interface{}]interface{})
+    if (cur_app["name"].(string) == app) {
+
+      /* iterate through all "ec"s used by "cur_app" */
+
+      ecs := cur_app["ec"].([]interface{})
+      for e_idx := 0 ; e_idx < len(ecs) ; e_idx++ {
+        cur_ec := ecs[e_idx].(map[interface{}]interface{})
+        if (cur_ec["hostname"].(string) == ec) {
+
+          /* iterate through all "commands" allowed on this ec */
+
+          cmds := cur_ec["commands"].([]interface{})
+          for c_idx := 0 ; c_idx < len(cmds) ; c_idx++ {
+            cmd_regex := cmds[c_idx].(string)
+            match, _ := regexp.MatchString(cmd_regex, cmd)
+            if (match) {
+              if (G_debug > 0) {
+                f_log(LOG_DEBUG,
+                      fmt.Sprintf("f_cmdAllowed() cmd:'%s' matches regex '%s'",
+                                  cmd, cmd_regex))
+              }
+              return(true)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  f_log(LOG_WARN, fmt.Sprintf("app:%s ec:%s '%s' not allowed.",
+                              app, ec, cmd))
+  return(false)
+}
+
+/*
+   This function is called from f_handleWeb() and supplied the HTTP payload
+   from a client. We expect this to be JSON, so we'll parse it and sanity
+   check it (note that integers are reported as "float64"). If it's good,
+   we'll add this to the global action list and return true, otherwise false.
 */
 
 func f_addAction(user string, payload string) bool {
@@ -424,6 +561,9 @@ func f_addAction(user string, payload string) bool {
     f_log(LOG_WARN, fmt.Sprintf("'cmd' by '%s' is empty.", user))
     return(false)
   }
+
+  /* examine each of the "cmd" entries, type check and ACL check them */
+
   for i:=0 ; i < len(cmd) ; i++ {
     if (reflect.TypeOf(cmd[i]).String() != "string") {
       f_log(LOG_WARN,
@@ -431,11 +571,20 @@ func f_addAction(user string, payload string) bool {
                         i, user, reflect.TypeOf(cmd[i]).String()))
       return(false)
     }
+    if (f_cmdAllowed(action["app"].(string),
+                     action["ec"].(string),
+                     cmd[i].(string)) == false) {
+      f_log(LOG_WARN,
+            fmt.Sprintf("'cmd[%d]' by '%s', '%s' is not allowed.",
+                        i, user, cmd[i]))
+      return(false)
+    }
   }
 
   /*
      calculate the MD5 checksum of the action's fields, use it to check for
-     repeat POSTs (from the same "user").
+     repeat POSTs (from the same "user"). This MD5 checksum is considered
+     opaque.
   */
 
   raw_data := fmt.Sprintf("%s:%f:%s:%s",
@@ -581,7 +730,7 @@ func f_evalActions() {
               (G_actions[i].ActionChecksum == G_actions[idx].ActionChecksum)) {
             if (G_debug > 0) {
               f_log(LOG_DEBUG,
-                    fmt.Sprintf ("DEBUG: f_evalActions() %s@%d matches %s@%d",
+                    fmt.Sprintf ("f_evalActions() %s@%d matches %s@%d",
                                  G_actions[idx].Username,
                                  G_actions[idx].PostTime,
                                  G_actions[i].Username,
@@ -596,7 +745,7 @@ func f_evalActions() {
               (G_actions[i].ActionChecksum == G_actions[idx].ActionChecksum)) {
             if (G_debug > 0) {
               f_log(LOG_DEBUG,
-                    fmt.Sprintf(": f_evalActions() %s@%d already published",
+                    fmt.Sprintf("f_evalActions() %s@%d already published",
                                 G_actions[i].Username, G_actions[i].PostTime))
             }
             G_actions[idx].State = STATE_PUBLISHED
