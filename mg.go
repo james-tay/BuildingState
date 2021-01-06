@@ -29,6 +29,7 @@
 
      This program responds to the following URI :
 
+       GET /metrics
        POST /v1?action
 
      Eg,
@@ -151,12 +152,34 @@ type S_pub struct {
   Checksum string                       // MD5 checksum of this EC's command
 }
 
+/*
+   This data structure tracks performance counters that will be displayed
+   at our /metrics URI.
+*/
+
+type S_metrics struct {
+  mg_auth_unset int64                   // f_authenticate() no creds supplied
+  mg_auth_success int64                 // f_authenticate() success
+  mg_auth_fail int64                    // f_authenticate() fails
+  mg_cmd_allowed int64                  // f_cmdAllowed() returned true
+  mg_cmd_denied int64                   // f_cmdAllowed() returned false
+  mg_cmd_acked int64                    // commands ACK'ed by ECs
+  mg_action_posts int64                 // calls to f_addAction()
+  mg_action_no_majority int64           // actions with no majority votes
+  mg_action_retired int64               // successfully completed actions
+  mg_mqtt_published int64               // messages published via MQTT
+  mg_mqtt_faults int64                  // number of MQTT publish faults
+  mg_mqtt_received int64                // number of MQTT messages received
+  mg_mqtt_reconnects int64              // number of MQTT reconnects
+}
+
 var G_debug int
 var G_cfg map[interface{}]interface{}
 var G_logFile *os.File                  // if defined, write logs to this file
 var G_logSize int64                     // current size of our log file
 var G_logMax int64                      // threshold to rotate our logfile
 var G_event = make(chan int, 1)         // a channel to indicate event arrived
+var G_metrics = S_metrics{}             // runtime metrics
 
 var G_mt_actions sync.Mutex             // Lock() before accessing "G_actions"
 var G_actions = []S_action{}            // list of S_action structures
@@ -407,6 +430,7 @@ func f_authenticate(hdr http.Header) string {
     if (G_debug > 0) {
       f_log(LOG_DEBUG, "f_authenticate() credentials not set.")
     }
+    G_metrics.mg_auth_unset++
     return("")
   }
 
@@ -416,18 +440,21 @@ func f_authenticate(hdr http.Header) string {
 
   if (all_users[user] == nil) {
     f_log(LOG_NOTICE, fmt.Sprintf("user '%s' does not exist.", user))
+    G_metrics.mg_auth_fail++
     return("")
   }
 
   pw_hash := md5.Sum([]byte(passwd))
   if (fmt.Sprintf("%x", pw_hash) != all_users[user].(string)) {
     f_log(LOG_NOTICE, fmt.Sprintf("incorrect password for '%s'.", user))
+    G_metrics.mg_auth_fail++
     return("")
   }
 
   if (G_debug > 0) {
     f_log(LOG_NOTICE, fmt.Sprintf("f_authenticate() validated user '%s'",
                                   user))
+    G_metrics.mg_auth_success++
   }
   return(user)
 }
@@ -466,6 +493,7 @@ func f_cmdAllowed(app string, ec string, cmd string) bool {
                       fmt.Sprintf("f_cmdAllowed() cmd:'%s' matches regex '%s'",
                                   cmd, cmd_regex))
               }
+              G_metrics.mg_cmd_allowed++ ;
               return(true)
             }
           }
@@ -476,6 +504,7 @@ func f_cmdAllowed(app string, ec string, cmd string) bool {
 
   f_log(LOG_WARN, fmt.Sprintf("app:%s ec:%s '%s' not allowed.",
                               app, ec, cmd))
+  G_metrics.mg_cmd_denied++ ;
   return(false)
 }
 
@@ -494,6 +523,7 @@ func f_addAction(user string, payload string) bool {
     f_log(LOG_WARN, fmt.Sprintf("Could not parse JSON: %s", payload))
     return(false)
   }
+  G_metrics.mg_action_posts++
 
   if (G_debug > 0) {
     f_log(LOG_DEBUG, fmt.Sprintf("f_addAction() parsed elements: %d",
@@ -622,6 +652,39 @@ func f_addAction(user string, payload string) bool {
 }
 
 /*
+   This function is invoked from f_handleWeb(). Our job is to prove that we're
+   alive and to print some internal performance metrics. Note that part of
+   proving that we're alive, is to try acquiring mutex locks
+*/
+
+func f_metrics(w http.ResponseWriter) {
+
+  /* print the current number of G_actions and G_pub entries */
+
+  G_mt_actions.Lock()
+  s := fmt.Sprintf ("mg_action_entries %d\n", len(G_actions))
+  G_mt_actions.Unlock()
+
+  G_mt_pub.Lock()
+  s = s + fmt.Sprintf ("mg_pub_entries %d\n", len(G_pub))
+  G_mt_pub.Unlock()
+
+  s = s + fmt.Sprintf("mg_cur_log_size %d\n", G_logSize)
+
+  /* now print out everything in G_metrics using reflection*/
+
+  values := reflect.ValueOf(&G_metrics).Elem()
+  mtypes := values.Type()
+
+  for i:=0 ; i < values.NumField() ; i++ {
+    field := values.Field(i)
+    s = s + fmt.Sprintf ("%v %v\n", mtypes.Field(i).Name, field)
+  }
+
+  w.Write([]byte(s))
+}
+
+/*
    This function is invoked magically when an HTTP request arrives because
    we're declared as a handler in main().
 */
@@ -645,6 +708,11 @@ func f_handleWeb(w http.ResponseWriter, r *http.Request) {
   }
 
   switch (r.Method) {
+    case "GET":
+      if (r.URL.Path == "/metrics") {
+        f_metrics(w)
+      }
+      return
     case "POST":
       user := f_authenticate(hdr)
       if (len(user) == 0) {
@@ -841,6 +909,9 @@ func f_doPublish(client mqtt.Client) {
         f_log(LOG_WARN, fmt.Sprintf("MQTT publish to %s failed - %s",
                                     G_pub[idx].Topic, token.Error()))
         G_pub[idx].PubTime = 0
+        G_metrics.mg_mqtt_faults++
+      } else {
+        G_metrics.mg_mqtt_published++
       }
     }
 
@@ -870,6 +941,7 @@ func f_subscribeCallback(client mqtt.Client, msg mqtt.Message) {
           fmt.Sprintf("f_subscribeCallback() topic:%s payload:%s pos:%d",
                       msg.Topic(), payload, pos))
   }
+  G_metrics.mg_mqtt_received++
 
   if (pos > 0) {
     checksum := payload[:pos]
@@ -882,6 +954,7 @@ func f_subscribeCallback(client mqtt.Client, msg mqtt.Message) {
                                       msg.Topic(), response,
                                       (float64)(duration_ns) / 1000000000.0))
         G_pub = append(G_pub[:idx], G_pub[idx+1:]...)
+        G_metrics.mg_cmd_acked++
         break
       }
     }
@@ -953,6 +1026,7 @@ func f_pubThread() {
         /* if MQTT is disconnected, try connect now */
 
         if (client.IsConnectionOpen() == false) {
+          G_metrics.mg_mqtt_reconnects++
           result := client.Connect()
           result.Wait()
           if (result.Error() == nil) {
@@ -981,19 +1055,23 @@ func f_pubThread() {
           validity := G_actions[idx].Payload["validity"].(float64)
           cutoff := G_actions[idx].PostTime + int64(validity * 1000000000.0)
           if (now > cutoff) {
-            if (G_debug > 0) {
-              f_log(LOG_DEBUG,
-                    fmt.Sprintf("f_pubThread() retired %s@%d state:%d {%v}",
-                                G_actions[idx].Username,
-                                G_actions[idx].PostTime,
-                                G_actions[idx].State,
-                                G_actions[idx].Payload))
+            if (G_actions[idx].State == STATE_PUBLISHED) {
+              if (G_debug > 0) {
+                f_log(LOG_DEBUG,
+                      fmt.Sprintf("f_pubThread() retired %s@%d state:%d {%v}",
+                                  G_actions[idx].Username,
+                                  G_actions[idx].PostTime,
+                                  G_actions[idx].State,
+                                  G_actions[idx].Payload))
+              }
+              G_metrics.mg_action_retired++
             }
             if (G_actions[idx].State == STATE_PENDING) {
               f_log(LOG_WARN, fmt.Sprintf("no majority vote for %s@%d {%v}",
                                           G_actions[idx].Username,
                                           G_actions[idx].PostTime,
                                           G_actions[idx].Payload))
+              G_metrics.mg_action_no_majority++
             }
 
             G_actions = append(G_actions[:idx], G_actions[idx+1:]...)
@@ -1075,6 +1153,7 @@ func main () {
 
   web := G_cfg["web"].(map[interface{}]interface{})
   listen_port := ":" + strconv.Itoa (web["listen"].(int))
+  http.HandleFunc ("/metrics", f_handleWeb)
   http.HandleFunc ("/v1", f_handleWeb)
 
   f_log(LOG_NOTICE, fmt.Sprintf ("Starting webserver on %d.", web["listen"]))
