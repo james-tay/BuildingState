@@ -8,28 +8,34 @@
 
 The following <metric> names are allowed :
 
-  sensor_accel
+  sensor_accel                  eg, ADXL335
   sensor_button
   sensor_current
-  sensor_gas
-  sensor_humidity
-  sensor_light
+  sensor_gas                    eg, MQ-5
+  sensor_environment
   sensor_moisture
-  sensor_pressure
+  sensor_pressure               eg, BMP-180
   sensor_pump
-  sensor_range
-  sensor_temperature
+  sensor_range                  eg, HC-SR04
   sensor_voltage
+
+The following <metric> names are deprecated because the DHT22 combines
+these measurements. We use <tags> to specify the "measurement" now.
+
+  sensor_temperature
+  sensor_humidity
 
 The following <tags> are supported for sensor metrics 
 
   location=<s>
     examples:
     - Balcony
+    - Office
     - WestWall
     - UtilityRoom
   model=<s>
     supported values:
+    - adxl335
     - ninv30a
     - a1301
     - mq5
@@ -38,11 +44,16 @@ The following <tags> are supported for sensor metrics
     - dht22
     - bmp180
     - resistive
-  axis=<[x|y|z]>
+  axis=<[x|y|z]>                (typically used with "sensor_accel")
   type=<s>
     supported values:
     - Min
     - Max
     - Ave
     - Cur
+  measurement=<s>               (typically used with "sensor_environment")
+    supported values:
+    - light
+    - temperature
+    - humidity
 

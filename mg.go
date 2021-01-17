@@ -27,10 +27,11 @@
        X-Username
        X-Password
 
-     This program responds to the following URI :
+     This program responds to the following URIs :
 
-       GET /metrics
-       POST /v1?action
+       GET /health              # for kubernetes readiness/liveness checks
+       GET /metrics             # for prometheus to scrape metrics
+       POST /v1?action          # for SDS entities to POST requests
 
      Eg,
 
@@ -129,6 +130,13 @@ const STATE_PENDING = 1
 */
 const STATE_PUBLISHED = 2
 
+/*
+   The f_pubThread()'s main loop should run every 1 second, which updates
+   "G_pubThread_heartbeat". Fire a watchdog timeout if no updates occur after
+   this number of seconds.
+*/
+const WATCHDOG_TIMEOUT = 5
+
 /* This data structure tracks an HTTP POST from an SDS entity */
 
 type S_action struct {
@@ -180,6 +188,7 @@ var G_logSize int64                     // current size of our log file
 var G_logMax int64                      // threshold to rotate our logfile
 var G_event = make(chan int, 1)         // a channel to indicate event arrived
 var G_metrics = S_metrics{}             // runtime metrics
+var G_pubThread_heartbeat int64         // f_pubThread() writes wallclock time
 
 var G_mt_actions sync.Mutex             // Lock() before accessing "G_actions"
 var G_actions = []S_action{}            // list of S_action structures
@@ -652,6 +661,31 @@ func f_addAction(user string, payload string) bool {
 }
 
 /*
+   This function is called when kubernetes is trying to perform readiness
+   and liveness HTTP checks. What's important is for us to return 200 to
+   indicate good health, otherwise 500 to indicate a fault condition. The
+   fact that we were called indicates the webserver is running. Thus check
+   that we're able to acquire mutex locks and that f_pubThread() is alive.
+*/
+
+func f_health(w http.ResponseWriter) {
+
+  G_mt_actions.Lock()
+  G_mt_actions.Unlock()
+  G_mt_pub.Lock()
+  G_mt_pub.Unlock()
+
+  last_heartbeat := time.Now().UnixNano() - G_pubThread_heartbeat
+  if (last_heartbeat / 1000 / 1000 / 1000 < WATCHDOG_TIMEOUT) {
+    w.WriteHeader(http.StatusOK)
+    w.Write([]byte("OK\n"))
+  } else {
+    w.WriteHeader(http.StatusInternalServerError)
+    w.Write([]byte("Failed\n"))
+  }
+}
+
+/*
    This function is invoked from f_handleWeb(). Our job is to prove that we're
    alive and to print some internal performance metrics. Note that part of
    proving that we're alive, is to try acquiring mutex locks
@@ -709,6 +743,9 @@ func f_handleWeb(w http.ResponseWriter, r *http.Request) {
 
   switch (r.Method) {
     case "GET":
+      if (r.URL.Path == "/health") {
+        f_health(w)
+      }
       if (r.URL.Path == "/metrics") {
         f_metrics(w)
       }
@@ -722,6 +759,7 @@ func f_handleWeb(w http.ResponseWriter, r *http.Request) {
       }
       if ((r.URL.RawQuery == "action") && (len(payload) > 0) &&
           (f_addAction(user, payload))) {
+        w.WriteHeader(http.StatusAccepted)
         w.Write([]byte("OK\n"))
         G_event <- 1
         return
@@ -1013,6 +1051,7 @@ func f_pubThread() {
   /* now enter our main loop ... wait for events POST'ed, or do admin tasks */
 
   for (true) {
+    G_pubThread_heartbeat = time.Now().UnixNano()
     select {
       case _ = <- G_event:
         if (G_debug > 0) {
@@ -1153,6 +1192,7 @@ func main () {
 
   web := G_cfg["web"].(map[interface{}]interface{})
   listen_port := ":" + strconv.Itoa (web["listen"].(int))
+  http.HandleFunc ("/health", f_handleWeb)
   http.HandleFunc ("/metrics", f_handleWeb)
   http.HandleFunc ("/v1", f_handleWeb)
 
