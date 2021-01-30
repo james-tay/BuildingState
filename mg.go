@@ -816,8 +816,8 @@ func f_evalActions() {
 
     if (G_debug > 0) {
       f_log(LOG_DEBUG,
-            fmt.Sprintf("f_evalActions() examining - %s@%d state:%d app:%s",
-                        G_actions[idx].Username, G_actions[idx].PostTime,
+            fmt.Sprintf("f_evalActions() examining %d: %s@%d state:%d app:%s",
+                        idx, G_actions[idx].Username, G_actions[idx].PostTime,
                         G_actions[idx].State, G_actions[idx].Payload["app"]))
     }
 
@@ -836,7 +836,7 @@ func f_evalActions() {
               (G_actions[i].ActionChecksum == G_actions[idx].ActionChecksum)) {
             if (G_debug > 0) {
               f_log(LOG_DEBUG,
-                    fmt.Sprintf ("f_evalActions() %s@%d matches %s@%d",
+                    fmt.Sprintf ("f_evalActions() %d: %s@%d matches %s@%d", i,
                                  G_actions[idx].Username,
                                  G_actions[idx].PostTime,
                                  G_actions[i].Username,
@@ -851,8 +851,9 @@ func f_evalActions() {
               (G_actions[i].ActionChecksum == G_actions[idx].ActionChecksum)) {
             if (G_debug > 0) {
               f_log(LOG_DEBUG,
-                    fmt.Sprintf("f_evalActions() %s@%d already published",
-                                G_actions[i].Username, G_actions[i].PostTime))
+                    fmt.Sprintf("f_evalActions() %d: %s@%d already published",
+                                i, G_actions[i].Username,
+                                G_actions[i].PostTime))
             }
             G_actions[idx].State = STATE_PUBLISHED
           }
@@ -860,8 +861,8 @@ func f_evalActions() {
       }
 
       if (G_debug > 0) {
-        f_log(LOG_DEBUG, fmt.Sprintf("f_evalActions() matches:%d",
-                                     len(match_e)))
+        f_log(LOG_DEBUG, fmt.Sprintf("f_evalActions() idx:%d match_e:%v",
+                                     idx, match_e))
       }
 
       majority := f_getAppMajority(G_actions[idx].Payload["app"].(string))
@@ -869,11 +870,17 @@ func f_evalActions() {
 
         /* we have a majority ! tag matching actions with STATE_PUBLISHED */
 
-        f_log(LOG_NOTICE, fmt.Sprintf("majority action %s <%d>",
-                                      G_actions[idx].ActionChecksum,
+        f_log(LOG_NOTICE, fmt.Sprintf("majority action %s idx:%d match_e:%d",
+                                      G_actions[idx].ActionChecksum, idx,
                                       len(match_e)))
         for i:=0 ; i < len(match_e) ; i++ {
-          G_actions[i].State = STATE_PUBLISHED
+          x := match_e[i]
+          if (G_debug > 0) {
+            f_log(LOG_DEBUG,
+                  fmt.Sprintf("f_evalActions() G_actions[%d] STATE_PUBLISHED",
+                              x))
+          }
+          G_actions[x].State = STATE_PUBLISHED
         }
 
         /* add command(s) to "G_pub" queue */
@@ -1138,6 +1145,8 @@ func main () {
 
   if (len(os.Args) != 2) {
     fmt.Printf("Usage: %s <config.yaml>\n", os.Args[0])
+    fmt.Printf("Environment:\n")
+    fmt.Printf("  DEBUG=<0|1>\n")
     os.Exit(1)
   }
 

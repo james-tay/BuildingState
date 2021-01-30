@@ -51,6 +51,7 @@ The following <tags> are supported for sensor metrics
     - Max
     - Ave
     - Cur
+    - State
   measurement=<s>               (typically used with "sensor_environment")
     supported values:
     - light
