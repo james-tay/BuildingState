@@ -172,6 +172,7 @@ type S_metrics struct {
   mg_cmd_allowed int64                  // f_cmdAllowed() returned true
   mg_cmd_denied int64                   // f_cmdAllowed() returned false
   mg_cmd_acked int64                    // commands ACK'ed by ECs
+  mg_cmd_noresponse int64               // no response from ECs
   mg_action_posts int64                 // calls to f_addAction()
   mg_action_no_majority int64           // actions with no majority votes
   mg_action_retired int64               // successfully completed actions
@@ -965,7 +966,9 @@ func f_doPublish(client mqtt.Client) {
     if (G_pub[idx].PubTime + G_pub[idx].TimeoutNs < now) {
       f_log(LOG_WARN, fmt.Sprintf("no response from %s for '%s' after %.3fs.",
                                   G_pub[idx].Topic, G_pub[idx].Msg,
-                                  float64(G_pub[idx].TimeoutNs) / 1000000000.0))
+                                  float64(G_pub[idx].TimeoutNs) /
+                                    1000000000.0))
+      G_metrics.mg_cmd_noresponse++
       G_pub = append(G_pub[:idx], G_pub[idx+1:]...)
       idx--
     }
