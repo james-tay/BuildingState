@@ -10,6 +10,7 @@ The following <metric> names are allowed :
 
   sensor_accel                  eg, ADXL335
   sensor_button
+  sensor_contact
   sensor_current
   sensor_gas                    eg, MQ-5
   sensor_environment
@@ -40,6 +41,7 @@ The following <tags> are supported for sensor metrics
     - a1301
     - mq5
     - hcsr04
+    - hcsr501
     - mcp3008
     - dht22
     - bmp180
