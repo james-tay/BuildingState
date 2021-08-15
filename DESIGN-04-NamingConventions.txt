@@ -9,16 +9,17 @@
 The following <metric> names are allowed :
 
   sensor_accel                  eg, ADXL335
-  sensor_button
-  sensor_contact
-  sensor_current
-  sensor_gas                    eg, MQ-5
-  sensor_environment
+  sensor_button                 eg, touch sensors, PIR output, etc
+  sensor_contact                eg, door/window contact sensors
+  sensor_current                eg, ie amps
+  sensor_gas                    eg, MQ-5, MQ-4
+  sensor_environment            eg, temperature/humidity/etc measurements
   sensor_moisture
   sensor_pressure               eg, BMP-180
   sensor_pump
   sensor_range                  eg, HC-SR04
   sensor_voltage
+  control_relay
 
 The following <metric> names are deprecated because the DHT22 combines
 these measurements. We use <tags> to specify the "measurement" now.
@@ -31,6 +32,7 @@ The following <tags> are supported for sensor metrics
   location=<s>
     examples:
     - Balcony
+    - Fireplace
     - Office
     - WestWall
     - UtilityRoom
@@ -40,12 +42,15 @@ The following <tags> are supported for sensor metrics
     - ninv30a
     - a1301
     - mq5
+    - mq4
     - hcsr04
     - hcsr501
     - mcp3008
     - dht22
     - bmp180
     - resistive
+    - capacitive
+    - divider                   (ie, voltage divider)
   axis=<[x|y|z]>                (typically used with "sensor_accel")
   type=<s>
     supported values:

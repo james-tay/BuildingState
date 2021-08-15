@@ -1,6 +1,8 @@
 /*
    Build:
 
+     tested on go1.13.15.
+
      % go get -v gopkg.in/yaml.v2
      % go get -v github.com/eclipse/paho.mqtt.golang
 
