@@ -1,0 +1,52 @@
+---
+
+config:
+
+  # the port that we'll listen for prometheus scrapes
+  listen: 9100
+
+  # how often we'll run REST and MQTT checks on each EC
+  interval: 60
+
+  # the test command we execute on each EC
+  test_cmd: uptime
+
+  # how long we'll wait for an EC to respond (in seconds)
+  timeout: 10
+
+  # debug mode, 0=off 1=on
+  debug: 0
+
+mqtt:
+
+  # credentials and MQTT server connection information
+  user: admin
+  pw: changeme
+  server: app-mqtt.example.com
+  port: 1883
+
+  # path to the pub/sub utilities we'll use
+  pub_tool: /path/to/mqtt_pub
+  sub_tool: /path/to/mqtt_sub
+
+  # EC's command topic prefix
+  command_prefix: lawrence/ec/commands
+
+  # EC's response topic prefix
+  response_prefix: lawrence/ec/response
+
+ec_list:
+
+  # a list of all the ECs we'll be checking
+
+  - alias: balcony
+    hostname: ec-0001
+  - alias: doorbell
+    hostname: ec-0002
+  - alias: fireplace
+    hostname: ec-0003
+  - alias: kitchen
+    hostname: ec-0004
+  - alias: sprinkler
+    hostname: ec-0005
+

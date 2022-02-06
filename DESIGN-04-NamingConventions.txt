@@ -41,6 +41,7 @@ The following <tags> are supported for sensor metrics
     - adxl335
     - ninv30a
     - a1301
+    - ds18b20
     - mq5
     - mq4
     - hcsr04
