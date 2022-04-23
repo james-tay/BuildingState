@@ -38,7 +38,26 @@
 #
 #  Although it can run standalone, the expectation is that this program runs
 #  as a side car in the pod which runs the Majority Gate (MG). Once running,
-#  this program responds to the "/metrics" URI.
+#  this program responds to the "/metrics" URI. When prometheus scrapes these
+#  metrics, they will look like,
+#
+#   ec_mqtt_latency{hostname="ec1",instance="app-mg.bar.com:9082",job="myjob"}
+#
+#  we want to replace "instance" with "hostname", because "ec_mqtt_latency"
+#  applies to the EC, we're not interested in the host running ec_exporter.
+#  Thus, in the prometheus configuration, we use,
+#
+#    - job_name: myjob
+#      ...
+#      metric_relabel_configs:
+#        - source_labels: [hostname]
+#          action: replace
+#          target_label: instance
+#          replacement: $1:80
+#
+#  After the above substitutions, metrics now look like,
+#
+#   ec_mqtt_latency{hostname="ec1",instance="ec1:80",job="myjob"}
 
 import os
 import sys
@@ -50,8 +69,6 @@ import threading
 import subprocess
 import http.server
 import urllib.request
-
-import pprint
 
 # Global variables
 
@@ -76,11 +93,6 @@ class c_web(http.server.BaseHTTPRequestHandler):
       self.send_response(200)
       self.send_header("Content-type", "text/plain")
       self.end_headers()
-      self.wfile.write(bytes("Hmm ...\n", "utf-8"))
-
-      if (G_cfg["config"]["debug"]):
-        pprint.pprint (G_metrics)
-
       report = ""
       for ec in G_metrics.keys():
         m = G_metrics[ec]
@@ -95,6 +107,11 @@ class c_web(http.server.BaseHTTPRequestHandler):
 
     self.send_response(404)
     self.end_headers()
+
+  # suppress logging
+
+  def log_message(self, format, *args):
+    return
 
 # This function forms the thread which will be the webserver
 
@@ -127,10 +144,10 @@ def f_gen_id():
 # data freshness.
 
 def f_add_metric(hostname, metric, value):
-
   global G_metrics
   if hostname not in G_metrics:
     x = {}
+    x["ec_rest_timed_out"] = 0
     x["ec_mqtt_timed_out"] = 0
     G_metrics[hostname] = x
   G_metrics[hostname][metric] = value
@@ -140,6 +157,12 @@ def f_add_metric(hostname, metric, value):
 # "hostname".
 
 def f_inc_metric(hostname, metric):
+  global G_metrics
+  if hostname not in G_metrics:
+    x = {}
+    x["ec_rest_timed_out"] = 0
+    x["ec_mqtt_timed_out"] = 0
+    G_metrics[hostname] = x
   G_metrics[hostname][metric] = G_metrics[hostname][metric] + 1
 
 # -----------------------------------------------------------------------------
@@ -220,10 +243,11 @@ while (1):
     resp = None
     url = "http://%s/v1?cmd=%s" % (ec["hostname"], G_cfg["config"]["test_cmd"])
     try:
-      resp = urllib.request.urlopen (url)
+      resp = urllib.request.urlopen (url, timeout=G_cfg["config"]["timeout"])
     except:
       e = sys.exc_info()
       print("WARNING: '%s' failed - %s" % (url, e[1]))
+      f_inc_metric(ec["hostname"], "ec_rest_timed_out")
     tv_end = time.time()
 
     if (resp is not None):
